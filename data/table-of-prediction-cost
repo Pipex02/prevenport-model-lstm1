@@ -28,4 +28,4 @@
 * Moving **right** (predicting a *higher* urgency than actual) incurs **small costs** (7–10) → extra inspections.
 * Moving **left** (predicting a *lower* urgency than actual) incurs **large costs** (200–500) → late/failed interventions. 
 
-**Useful visuals cited by the paper:** PCA/t-SNE class scatter for validation (Fig. 8), class-imbalance counts for validation/test (Fig. 7). These reinforce that evaluation should prioritize **cost** and **recall of urgent classes** over plain accuracy. 
+**Useful visuals cited by the paper:** PCA/t-SNE class scatter for validation (Fig. 8), class-imbalance counts for validation/test (Fig. 7). These reinforce that evaluation should prioritize **cost** and **recall of urgent classes** over plain accuracy.
