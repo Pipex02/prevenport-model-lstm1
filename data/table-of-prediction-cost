@@ -1,0 +1,31 @@
+# Technical validation — summary
+
+* The dataset was released to address the lack of open, real-world PdM data and to enable **reproducible, comparable** research on heavy-duty trucks. It is suitable for **regression (RUL), survival analysis, classification, and anomaly detection** because it is a **real multivariate time-series** collected from actual vehicles. 
+* For **survival/RUL**, the temporal structure matters and **censored vehicles** (no repair within the observation window) are explicitly present in the labels. 
+* For **classification**, models can predict whether a vehicle will fail within a future time window (the five “proximity-to-failure” classes used in validation/test). Dimensionality-reduction (PCA, t-SNE) on last-readout vectors shows classes are **not trivially separable** in 2D, highlighting the problem’s complexity. 
+
+# Cost-based evaluation (classification of proximity-to-failure)
+
+* The paper proposes a **cost function** to evaluate predictions:
+  (\text{Total_cost} = \sum \text{Cost}*{n,m} \times N*{\text{instances}}),
+  where (n) is the **actual** class and (m) the **predicted** class. **False negatives (predicting a safer class than reality)** are penalized far more than false positives (unnecessary checks). 
+
+## Table 1 — Prediction cost (from the paper)
+
+|               | Pred: 0 | Pred: 1 | Pred: 2 | Pred: 3 | Pred: 4 |
+| ------------- | ------: | ------: | ------: | ------: | ------: |
+| **Actual: 0** |       — |   **7** |   **8** |   **9** |  **10** |
+| **Actual: 1** | **200** |       — |   **7** |   **8** |   **9** |
+| **Actual: 2** | **300** | **200** |       — |   **7** |   **8** |
+| **Actual: 3** | **400** | **300** | **200** |       — |   **7** |
+| **Actual: 4** | **500** | **400** | **300** | **200** |       — |
+
+(Excerpted from **Table 1** in the article; values defined with domain experts. Note how costs **increase sharply** when predicting **too low** versus the true urgency.) 
+
+**Interpretation tips:**
+
+* Rows = reality; columns = your model’s prediction.
+* Moving **right** (predicting a *higher* urgency than actual) incurs **small costs** (7–10) → extra inspections.
+* Moving **left** (predicting a *lower* urgency than actual) incurs **large costs** (200–500) → late/failed interventions. 
+
+**Useful visuals cited by the paper:** PCA/t-SNE class scatter for validation (Fig. 8), class-imbalance counts for validation/test (Fig. 7). These reinforce that evaluation should prioritize **cost** and **recall of urgent classes** over plain accuracy. 

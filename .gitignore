@@ -1,0 +1,43 @@
+# Byte-compiled / compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# ML experiment artifacts
+mlruns/
+wandb/
+
+# Model artifacts and checkpoints
+models/
+checkpoints/
+runs/
+
+# Data layers (keep small sample & configs tracked)
+data/raw/
+data/interim/
+data/processed/
+data/external/
+
