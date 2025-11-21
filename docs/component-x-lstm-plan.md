@@ -18,7 +18,7 @@ We will treat each training example as a variable-length multivariate time serie
 
 **Objectives**
 - Create a clean, reproducible Python ML project structure.
-- Decide base tech stack (PyTorch + Lightning-style training loop or plain PyTorch).
+- Use plain PyTorch as the base training stack (no Lightning), keeping the code explicit and easy to debug.
 - Make it easy to add monitoring/serving later.
 
 **Tasks**
