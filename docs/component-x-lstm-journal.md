@@ -720,25 +720,151 @@ ft = FeatureTransformer.from_json("artifacts/feature_stats.json")
 sequences_norm = ft.transform_sequences(sequences, seq_lengths)
 ```
 
-### 4. Implicaciones para siguientes fases
+### 4. Implications for later phases
 
 - **Phase 5 (Dataset & DataLoader):**
-  - El `Dataset` de PyTorch podrá:
-    - Cargar secuencias y longitudes desde `.npz` (`train_sequences*.npz`).
-    - Aplicar `FeatureTransformer` en `__getitem__` o pre-normalizar
-      todas las secuencias antes del entrenamiento.
-  - El padding ya está normalizado a 0, lo que simplifica el uso de packing o máscaras en el LSTM.
-- **Phase 6 (Modelo LSTM):**
-  - El modelo recibirá entradas con media 0 y varianza ~1 por feature, lo que favorece una convergencia más estable.
-  - Las features de contadores tienen escala comprimida (`log1p`), reduciendo el impacto de colas largas.
-- **Generalización / reproducibilidad:**
-  - El archivo `artifacts/feature_stats.json` documenta explícitamente el tipo de transformación y los parámetros por feature, permitiendo:
-    - Reproducir experimentos.
-    - Aplicar el mismo preprocesamiento a nuevas particiones (validación, test, producción).
+  - The PyTorch Dataset will:
+    - Load sequences and lengths from `.npz` (`train_sequences*.npz`).
+    - Apply `FeatureTransformer` in `__getitem__` or operate on pre-normalized sequences.
+  - Padding is already normalized to 0, which simplifies using packing or masks in the LSTM.
+- **Phase 6 (LSTM model):**
+  - The model receives inputs with mean ≈0 and variance ≈1 per feature, improving training stability.
+  - Counter features have compressed scale (`log1p`), reducing the impact of heavy tails.
+- **Generalization / reproducibility:**
+  - The file `artifacts/feature_stats.json` explicitly documents the transform type and parameters per feature, enabling:
+    - Experiment reproducibility.
+    - Applying the same preprocessing to new partitions (validation, test, production).
 
 ---
 
-Future phases (5 and beyond) will append their own sections here with:
+## Phase 5 – Dataset & DataLoader Implementation
+
+**Date:** (initial Dataset/DataLoader scaffolding)  
+**Scope:** Wrap pre-built sequences and feature transforms in PyTorch Dataset/DataLoader abstractions suitable for training the LSTM.
+
+### 1. Objectives and design choices
+
+- Provide a reusable Dataset that:
+  - Loads sequences/labels from `.npz` files produced in Phase 3.
+  - Optionally applies the Phase 4 `FeatureTransformer` on-the-fly.
+  - Returns tensors `(sequence, label, seq_length)` ready for an LSTM.
+- Provide DataLoader helpers that:
+  - Handle shuffling/batching.
+  - Optionally apply class-weighted sampling to mitigate label imbalance.
+- Keep the implementation simple:
+  - `.npz` is loaded once; per-sample transform is applied in `__getitem__`.
+  - No additional padding inside the DataLoader (sequences are already length 128).
+
+### 2. ComponentXSequenceDataset – `src/data/datasets.py`
+
+New module:
+
+- `src/data/datasets.py`
+
+Main class:
+
+- `ComponentXSequenceDataset(torch.utils.data.Dataset)`:
+  - Constructor arguments:
+    - `npz_path`: path to `.npz` file with sequences.
+    - `feature_stats_path` (optional): path to `feature_stats.json`.
+    - `normalize`: whether to apply `FeatureTransformer` (default: True if stats path is given).
+    - `device`: optional `torch.device` or string (`"cuda"`, `"cpu"`).
+  - Expected `.npz` contents (from Phase 3 windowing):
+    - `sequences`: `(N, L, F)` float32.
+    - `labels`: `(N,)` int64.
+    - `seq_lengths`: `(N,)` int64.
+    - `vehicle_ids`: `(N,)` int64 (optional).
+    - `reference_time_step`: `(N,)` float32 (optional).
+  - Initialization:
+    - Loads arrays from `np.load(npz_path)`.
+    - Stores `self.sequences`, `self.labels`, `self.seq_lengths`, and optional metadata.
+    - Creates a `FeatureTransformer` instance if `normalize=True` and `feature_stats_path` is provided.
+  - `__len__`:
+    - Returns the number of sequences `N`.
+  - `_transform_single(seq_np, length)`:
+    - If no transformer:
+      - Returns the sequence unchanged.
+    - With transformer:
+      - Wraps the sequence as batch `(1, L, F)` and calls `transform_sequences`.
+      - Unwraps back to `(L, F)`.
+  - `__getitem__(idx)`:
+    - Extracts:
+      - `seq_np = sequences[idx]` (NumPy `(L, F)`).
+      - `label = labels[idx]`.
+      - `length = seq_lengths[idx]`.
+    - Applies `_transform_single` (normalization + padding reset) if enabled.
+    - Converts to tensors:
+      - `seq`: `torch.float32` tensor `(L, F)`.
+      - `y`: `torch.long` scalar label.
+      - `seq_len`: `torch.long` scalar sequence length.
+    - If `device` is set, moves tensors to that device (with `non_blocking=True`).
+    - Returns `(seq, y, seq_len)`.
+
+Notes:
+
+- Imports from `torch` are wrapped in a try/except that raises a clear error if PyTorch is not installed.
+- The dataset relies on the consistent feature order tracked in `feature_stats.json` to align with Phase 4 transforms.
+
+### 3. DataLoader helpers – `src/data/dataloaders.py`
+
+New module:
+
+- `src/data/dataloaders.py`
+
+Helper function:
+
+- `create_sequence_dataloader(...) -> DataLoader`:
+  - Arguments:
+    - `npz_path`: path to `.npz` sequences file.
+    - `feature_stats_path`: path to `feature_stats.json` (for normalization).
+    - `batch_size`: batch size (default 64).
+    - `shuffle`: whether to shuffle (ignored if `class_weighted=True`).
+    - `class_weighted`: if True, use `WeightedRandomSampler` for class-imbalanced training.
+    - `num_workers`: DataLoader workers (default 0).
+    - `device`: optional device passed to the underlying Dataset.
+  - Behavior:
+    1. Instantiates `ComponentXSequenceDataset` with the given paths and device.
+    2. If `class_weighted`:
+       - Computes class frequencies from `dataset.labels` using `np.bincount`.
+       - Derives per-class weights `1 / count` (0 for unseen classes).
+       - Builds per-sample weights via indexing with labels.
+       - Uses `WeightedRandomSampler` with replacement to construct batches.
+       - Returns `DataLoader(..., sampler=sampler, shuffle=False, ...)`.
+    3. If not `class_weighted`:
+       - Returns a standard `DataLoader` with `shuffle` as specified.
+  - `pin_memory` is set when a CUDA device string is provided.
+
+Example usage:
+
+```python
+from src.data.dataloaders import create_sequence_dataloader
+
+train_loader = create_sequence_dataloader(
+    npz_path="data/train_sequences.npz",
+    feature_stats_path="artifacts/feature_stats.json",
+    batch_size=64,
+    shuffle=True,
+    class_weighted=True,   # or False for simple shuffling
+    num_workers=0,
+    device="cuda"          # or "cpu"
+)
+```
+
+### 4. Implications for later phases
+
+- **Phase 6 (LSTM model):**
+  - The training loop can directly iterate over `train_loader`:
+    - Each batch yields `(batch_seq, batch_labels, batch_seq_lengths)`.
+  - It can use `batch_seq_lengths` to pack sequences or apply masks when aggregating over time.
+- **Phase 7 (Training loop, loss, and metrics):**
+  - Class-weighted sampling is available as a first lever against imbalance.
+  - Alternatively, one can use class-weighted loss (via class frequencies from `dataset.labels`).
+- **Evaluation:**
+  - Equivalent loaders can be created for validation/test `.npz` files (once built), typically without class weighting and with `shuffle=False`.
+
+---
+
+Future phases (6 and beyond) will append their own sections here with:
 - New findings (label construction, sequence statistics, feature transformations, model behavior).
 - Explicit commands/scripts used.
 - Key decisions and rationales.
