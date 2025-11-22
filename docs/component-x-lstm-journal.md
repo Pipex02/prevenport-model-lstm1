@@ -968,4 +968,166 @@ Notes:
   - The model can be configured via `LSTMClassifierConfig`, making hyperparameters explicit and easy to log.
   - Pooling type (`"last"` vs `"mean"`) can be treated as a tunable hyperparameter.
 
-The actual training/evaluation loop and metric logging will be implemented in Phase 7.
+The actual training/evaluation loop and metric logging are implemented in Phase 7.
+
+---
+
+## Phase 7 – Training Loop, Loss, and Metrics
+
+**Date:** (baseline training script)  
+**Scope:** Implement a reproducible training loop that wires together the LSTM model, sequence DataLoaders, loss, metrics, and checkpointing.
+
+### 1. Objectives and design choices
+
+- Provide a single entry point to train the LSTM classifier:
+  - Takes `.npz` sequence files + `feature_stats.json` as inputs.
+  - Configures the model, optimizer, scheduler, and loss from CLI arguments.
+  - Supports resuming from a previous checkpoint.
+- Implement baseline metrics:
+  - Training/validation loss.
+  - Accuracy and macro F1 on validation.
+- Implement robust checkpointing:
+  - `last.pt` – last epoch state (for resume).
+  - `best.pt` – best validation macro F1.
+  - Checkpoints include model, optimizer, scheduler states, and RNG states.
+
+### 2. Training script – `src/training/train_lstm.py`
+
+New module:
+
+- `src/training/train_lstm.py`
+
+Main components:
+
+- **Argument parsing (`parse_args`)**:
+  - Data:
+    - `--train-npz`: path to training sequences (default `data/train_sequences.npz`).
+    - `--val-npz`: path to validation sequences (optional).
+    - `--feature-stats`: path to `feature_stats.json` (default `artifacts/feature_stats.json`).
+  - Model:
+    - `--hidden-size` (default 128), `--num-layers` (default 2).
+    - `--bidirectional` (flag).
+    - `--dropout` (default 0.1).
+    - `--pooling` (`"last"` or `"mean"`, default `"last"`).
+  - Optimization:
+    - `--batch-size` (default 64).
+    - `--epochs` (default 20).
+    - `--lr` (default 1e-3).
+    - `--weight-decay` (default 1e-4).
+    - `--step-lr-gamma` (default 0.5).
+    - `--step-lr-step-size` (default 10 epochs).
+    - `--class-weighted` (flag) to enable class weighting.
+  - Misc:
+    - `--device` (e.g., `"cuda"`, `"cpu"`, or None for auto-select).
+    - `--output-dir` (default `artifacts`).
+    - `--resume-from` (path to checkpoint `.pt`).
+    - `--log-interval` (batches between train logs).
+
+- **Device selection**:
+  - `select_device` chooses:
+    - Preferred device if provided, otherwise `"cuda"` if available, else `"cpu"`.
+
+- **Data loading (`build_datasets_and_loaders`)**:
+  - Instantiates a `ComponentXSequenceDataset` for training:
+    - Uses `args.train_npz` and `args.feature_stats` for normalization.
+  - Builds:
+    - `train_loader` via `create_sequence_dataloader`:
+      - `class_weighted=True` uses `WeightedRandomSampler`.
+    - `val_loader` if `--val-npz` is provided (no class weighting, `shuffle=False`).
+
+- **Model and optimizer (`build_model_and_optim`)**:
+  - Builds `LSTMClassifierConfig` with:
+    - `input_size` from `train_dataset.num_features`.
+    - Hyperparameters from CLI.
+  - Instantiates `LSTMClassifier(config)` and moves it to the selected device.
+  - Optimizer: `AdamW`.
+  - Scheduler: `StepLR(optimizer, step_size, gamma)`.
+
+- **Class weights (`compute_class_weights`)**:
+  - Uses `np.bincount` over `train_dataset.labels`.
+  - Sets weight for class `c` as `1 / count[c]` where count>0.
+  - Falls back to uniform weights if something goes wrong.
+  - If `--class-weighted` is set:
+    - Uses these weights in `nn.CrossEntropyLoss(weight=class_weights)` and may also use class-weighted sampling (depending on loader settings).
+
+- **Checkpointing (`save_checkpoint`, `load_checkpoint`)**:
+  - `save_checkpoint(path, epoch, model, optimizer, scheduler, best_val_f1, args)`:
+    - Saves:
+      - `epoch`
+      - `model_state`, `optimizer_state`, `scheduler_state`
+      - `best_val_f1`
+      - CLI `args` (as a dict)
+      - `torch_rng_state`
+      - `cuda_rng_state` if available.
+  - `load_checkpoint(path, model, optimizer, scheduler)`:
+    - Restores model/optimizer/scheduler states.
+    - Restores RNG states (CPU and CUDA).
+    - Returns `start_epoch = last_epoch + 1`, `best_val_f1`, and stored `args`.
+
+### 3. Training and evaluation loops
+
+- **Training (`train_one_epoch`)**:
+  - Sets `model.train()`.
+  - For each batch `(seq, labels, seq_lengths)`:
+    - Moves tensors to device.
+    - Forward pass: `logits = model(seq, seq_lengths)`.
+    - Loss: `criterion(logits, labels)`.
+    - Backprop: `loss.backward()`, `optimizer.step()`.
+  - Tracks:
+    - Running loss (sum over samples).
+    - Predictions and targets (for accuracy).
+  - Logs intermediate average loss every `log_interval` batches.
+  - Returns:
+    - `avg_loss` and training accuracy.
+
+- **Evaluation (`evaluate`)**:
+  - Sets `model.eval()`, wraps loop in `torch.no_grad()`.
+  - For each batch:
+    - Forward pass and loss computation.
+    - Collects predictions and targets.
+  - Computes:
+    - Average loss.
+    - Accuracy (`accuracy_score` from scikit-learn).
+    - Macro F1 (`f1_score(..., average="macro")`).
+  - Returns `(val_loss, val_acc, val_macro_f1)`.
+
+- **Main training loop (`main`)**:
+  - Parses args, selects device, creates output dir.
+  - Builds datasets/loaders, model/optimizer/scheduler, and loss function.
+  - Handles optional resume:
+    - If `--resume-from` exists, loads checkpoint and continues from `epoch+1`.
+  - For each epoch:
+    - Runs `train_one_epoch`.
+    - Runs `evaluate` if `val_loader` exists.
+    - Steps LR scheduler.
+    - Saves `last.pt` every epoch.
+    - If validation macro F1 improves, updates `best_val_f1` and saves `best.pt`.
+
+### 4. Usage example
+
+Once PyTorch is installed and full train/validation sequences are available:
+
+```bash
+python -m src.training.train_lstm \
+  --train-npz data/train_sequences.npz \
+  --val-npz data/val_sequences.npz \
+  --feature-stats artifacts/feature_stats.json \
+  --batch-size 64 \
+  --epochs 20 \
+  --hidden-size 128 \
+  --num-layers 2 \
+  --bidirectional \
+  --dropout 0.1 \
+  --pooling last \
+  --class-weighted \
+  --device cuda \
+  --output-dir artifacts \
+  --log-interval 100
+```
+
+This will produce:
+
+- `artifacts/last.pt` – latest checkpoint (for resume).
+- `artifacts/best.pt` – checkpoint with best validation macro F1.
+
+---
