@@ -443,6 +443,172 @@ For additional detail and rationale, see `docs/labeling-decisions.md`.
 
 ---
 
+## Phase 3 – Sequence Construction & Sampling Strategy
+
+**Date:** (initial sequence window construction)  
+**Scope:** Turn per-vehicle operational readouts + training labels into fixed-length sequences suitable for LSTM input.
+
+### 1. Core Design Decisions
+
+- **Window length (L):** 128 time steps.
+  - Past-only: for each labeled example, the sequence covers up to the last 128 time_steps **ending at** `reference_time_step`.
+  - Rationale: 128 steps provide a substantial history window for most vehicles (typical horizons ~200–300) without making sequences excessively long for an LSTM.
+- **Window orientation:** past-inclusive
+  - For each label row `(vehicle_id, reference_time_step, class_label)` we select all readouts with:
+    - `time_step <= reference_time_step`
+  - From that set, we use the **most recent** 128 steps; if fewer exist, we use all available.
+- **Padding:** zero pre-padding
+  - If a vehicle has `< 128` valid steps before the reference, we pad at the **start** of the sequence with zeros.
+  - After normalization (Phase 4), zero corresponds to “typical” feature values, so padding is neutral.
+- **Variable length handling:**
+  - For each sequence, we store:
+    - `seq_length` = number of real (non-padded) time-steps.
+    - The padded sequence itself of shape `(128, num_features)`.
+  - LSTMs will use `seq_length` to ignore padded positions via packing or masking.
+
+### 2. Implementation – `src/features/windowing.py`
+
+New module:
+
+- `src/features/windowing.py`
+
+Key configuration:
+
+- `SequenceWindowConfig` dataclass:
+  - `operational_path` (default `data/train_operational_readouts.csv`)
+  - `labels_path` (default `data/train_proximity_labels.csv`)
+  - `output_path` (optional, e.g. `data/train_sequences.npz`)
+  - `window_size` (default `128`)
+  - `pad_value` (default `0.0`)
+  - `max_windows_per_vehicle` (optional cap for sampling)
+
+Main function:
+
+- `build_sequences_for_training(config: SequenceWindowConfig | None) -> (sequences, labels, seq_lengths, vehicle_ids, ref_times)`
+
+Behavior:
+
+1. Load training labels:
+   - `labels_df = pd.read_csv(labels_path)`
+   - Required columns: `vehicle_id`, `reference_time_step`, `class_label`.
+   - Group labels by `vehicle_id` for efficient per-vehicle processing:
+     - `labels_by_vehicle = dict(labels_df.groupby("vehicle_id"))`
+
+2. Load operational readouts:
+   - `op_df = pd.read_csv(operational_path)`
+   - Required columns: `vehicle_id`, `time_step`.
+   - Sort:
+     - `op_df.sort_values(["vehicle_id", "time_step"])`
+   - Feature columns:
+     - `feature_cols = [c for c in op_df.columns if c not in ("vehicle_id", "time_step")]`
+     - Typical count: 105 feature columns (all histograms + counters).
+
+3. Per-vehicle sequence building:
+   - Group operations by vehicle:
+     - `op_grouped = op_df.groupby("vehicle_id")`
+   - For each `vid` present in `labels_by_vehicle`:
+     - If `vid` is absent from `op_grouped`, skip.
+     - Extract and sort that vehicle’s operations:
+       - `vehicle_ops = op_grouped.get_group(vid).sort_values("time_step")`
+       - `times` = array of `time_step` values.
+       - `feats` = array of feature values (`feature_cols`) as `float32`.
+     - Optionally limit the number of windows per vehicle:
+       - `max_windows_per_vehicle` (default: no cap).
+     - For each label row for that vehicle:
+       - `ref_t = reference_time_step`
+       - `class_label` (0–4)
+       - Select all rows where `time_step <= ref_t`:
+         - `mask = times <= ref_t`
+       - If no rows match → skip (no history).
+       - Let `hist_feats = feats[mask]`, `seq_len = hist_feats.shape[0]`.
+       - If `seq_len >= window_size`:
+         - `window = hist_feats[-window_size:]` (last L steps).
+         - `effective_len = window_size`
+       - Else:
+         - `pad_len = window_size - seq_len`
+         - `pad_block = zeros((pad_len, num_features))`
+         - `window = vstack([pad_block, hist_feats])`
+         - `effective_len = seq_len`
+       - Append:
+         - `window` to `sequences`
+         - `class_label` to `labels`
+         - `effective_len` to `seq_lengths`
+         - `vid` to `vehicle_ids`
+         - `ref_t` to `ref_times`
+
+4. Output:
+   - Convert lists to arrays:
+     - `sequences` → `float32` array of shape `(N, 128, F)`
+     - `labels` → `int64` array of shape `(N,)`
+     - `seq_lengths` → `int64` array of shape `(N,)`
+     - `vehicle_ids` → `int64` array of shape `(N,)`
+     - `ref_times` → `float32` array of shape `(N,)`
+   - If `config.output_path` is set:
+     - Save all arrays to a compressed `.npz`:
+       - `np.savez_compressed(output_path, sequences=..., labels=..., seq_lengths=..., vehicle_ids=..., reference_time_step=...)`
+
+CLI:
+
+- Command pattern:
+  ```bash
+  .\.venv\Scripts\python.exe -m src.features.windowing \
+    --operational data/train_operational_readouts.csv \
+    --labels data/train_proximity_labels.csv \
+    --output data/train_sequences.npz \
+    --window-size 128 \
+    --max-windows-per-vehicle 1  # optional, for sampling
+  ```
+
+The CLI prints:
+
+- `shape=(N, 128, num_features)` for sequences.
+- Class distribution of `class_label` in the generated sequences.
+
+### 3. Sanity Check Run (Sample)
+
+For a quick sanity check (not full dataset), a sample run was executed:
+
+- Command:
+  ```bash
+  .\.venv\Scripts\python.exe -m src.features.windowing \
+    --operational data/train_operational_readouts.csv \
+    --labels data/train_proximity_labels.csv \
+    --output data/train_sequences_sample.npz \
+    --window-size 128 \
+    --max-windows-per-vehicle 1
+  ```
+
+Sample run results:
+
+- Built sequences:
+  - Shape: `(23,540, 128, 105)` (105 feature columns).
+- Label distribution in this sampled dataset:
+  - Class 0: 21,278 (**90.391%**)
+  - Class 1: 31 (**0.132%**)
+  - Class 2: 70 (**0.297%**)
+  - Class 3: 161 (**0.684%**)
+  - Class 4: 2,000 (**8.496%**)
+
+Interpretation:
+
+- Even with at most one window per vehicle, class 0 remains dominant, but there are meaningful numbers of high-risk (class 4) sequences.
+- Since `max_windows_per_vehicle=1` was applied in the sample, this is a lower bound on the number of available windows; dropping this cap would produce more sequences for event vehicles (especially in non-zero classes) at the cost of a larger dataset.
+
+### 4. Implications for Later Phases
+
+- **Phase 4 (Feature engineering):**
+  - Normalization and feature grouping will operate on the feature dimension of these sequences (or on raw operational data before windowing, depending on the final design).
+  - Zero-padding plus sequence lengths simplifies normalization and LSTM packing.
+- **Phase 5 (Dataset & DataLoader):**
+  - PyTorch `Dataset` can directly wrap:
+    - `sequences`, `labels`, and `seq_lengths` (plus optional `vehicle_ids`, `ref_times` for analysis).
+  - DataLoader collate functions will not need to pad further if sequences are pre-padded to length 128.
+- **Imbalance handling:**
+  - Class imbalance patterns seen in Phase 2/3 will inform:
+    - Class-weighted loss, focal loss, or oversampling in the DataLoader.
+
+---
+
 Future phases (2 and beyond) will append their own sections here with:
 - New findings (label construction, sequence statistics, feature transformations, model behavior).
 - Explicit commands/scripts used.
