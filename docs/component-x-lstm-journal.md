@@ -868,3 +868,104 @@ Future phases (6 and beyond) will append their own sections here with:
 - New findings (label construction, sequence statistics, feature transformations, model behavior).
 - Explicit commands/scripts used.
 - Key decisions and rationales.
+
+---
+
+## Phase 6 – LSTM Model Design
+
+**Date:** (baseline LSTM implementation)  
+**Scope:** Define and implement a baseline LSTM classifier that consumes the fixed-length, normalized sequences built in Phases 3–5.
+
+### 1. Objectives and design choices
+
+- Use a straightforward but robust architecture suitable as a baseline:
+  - 1–2 LSTM layers with optional bidirectionality and dropout.
+  - Simple pooling strategy over time (`"last"` by default, `"mean"` as an option).
+  - MLP head mapping sequence representation → 5-class logits.
+- Keep the interface compatible with existing Dataset/DataLoader:
+  - Input shape: `(batch_size, seq_len=128, input_size=105)`.
+  - Optional `seq_lengths` tensor to support mean pooling and future extensions.
+- Rely on left-padding (zeros at the start) to simplify pooling:
+  - For `"last"` pooling, the last time step is always a real observation, regardless of sequence length.
+
+### 2. Model implementation – `src/models/lstm_classifier.py`
+
+New module:
+
+- `src/models/lstm_classifier.py`
+
+Configuration:
+
+- `LSTMClassifierConfig` dataclass:
+  - `input_size`: number of features per time-step (e.g., 105).
+  - `hidden_size`: LSTM hidden size (default 128).
+  - `num_layers`: number of stacked LSTM layers (default 2).
+  - `bidirectional`: whether the LSTM is bidirectional (default True).
+  - `dropout`: dropout rate applied between LSTM layers and in the classifier head (default 0.1).
+  - `num_classes`: number of output classes (default 5).
+  - `pooling`: `"last"` or `"mean"` (default `"last"`).
+
+Model class:
+
+- `LSTMClassifier(nn.Module)`:
+  - Constructor:
+    - Builds an `nn.LSTM` with:
+      - `input_size = config.input_size`
+      - `hidden_size = config.hidden_size`
+      - `num_layers = config.num_layers`
+      - `batch_first = True`
+      - `bidirectional = config.bidirectional`
+      - `dropout = config.dropout` if `num_layers > 1` else `0.0`
+    - Computes `lstm_output_size = hidden_size * (2 if bidirectional else 1)`.
+    - Builds a classifier head:
+      - `Linear(lstm_output_size, 128) → ReLU → Dropout`
+      - `Linear(128, 64) → ReLU → Dropout`
+      - `Linear(64, num_classes)`
+  - `_pool_last(lstm_out)`:
+    - Input: `lstm_out` of shape `(batch, seq_len, hidden*dir)`.
+    - Returns: last time-step vector `lstm_out[:, -1, :]`.
+    - Justification: sequences are left-padded, so the last index always corresponds to a real observation.
+  - `_pool_mean(lstm_out, seq_lengths)`:
+    - Inputs:
+      - `lstm_out`: `(batch, seq_len, hidden*dir)`.
+      - `seq_lengths`: `(batch,)` with true lengths.
+    - For each sequence:
+      - Computes start index of real data: `start = seq_len - length`.
+      - Builds a mask where positions ≥ `start` are 1 (real), others 0 (padding).
+      - Applies the mask to `lstm_out`, sums over time, and divides by `length`.
+    - Returns: mean-pooled representation `(batch, hidden*dir)`.
+  - `forward(x, seq_lengths=None)`:
+    - Inputs:
+      - `x`: `(batch, seq_len, input_size)` tensor.
+      - `seq_lengths`: `(batch,)` tensor (required if `pooling="mean"`).
+    - Operations:
+      - Passes `x` through `self.lstm`:
+        - `lstm_out, _ = self.lstm(x)` → `(batch, seq_len, hidden*dir)`.
+      - Applies pooling:
+        - `"last"`: uses `_pool_last`.
+        - `"mean"`: uses `_pool_mean` and requires `seq_lengths`.
+      - Feeds pooled representation into `self.classifier` to produce logits.
+    - Output:
+      - `logits` of shape `(batch, num_classes)`.
+
+Notes:
+
+- Imports from `torch` are wrapped so that importing this module without PyTorch installed raises a clear error.
+- The model is agnostic to the exact feature semantics; it only assumes:
+  - Input is already normalized per feature (via `FeatureTransformer`).
+  - Sequences are left-padded with zeros and share a common `seq_len`.
+
+### 3. Integration expectations
+
+- **With Dataset/DataLoader (Phase 5):**
+  - Training loop will typically receive batches:
+    - `seq` `(batch, 128, 105)`, `labels` `(batch,)`, `seq_lengths` `(batch,)`.
+  - Forward pass:
+    - `logits = model(seq, seq_lengths)` (for `"mean"` pooling) or `model(seq)` for `"last"`.
+  - Loss:
+    - Cross-entropy with optional class weights derived from label frequencies.
+- **With future training script (Phase 7):**
+  - The model can be configured via `LSTMClassifierConfig`, making hyperparameters explicit and easy to log.
+  - Pooling type (`"last"` vs `"mean"`) can be treated as a tunable hyperparameter.
+
+The actual training/evaluation loop and metric logging will be implemented in Phase 7.
