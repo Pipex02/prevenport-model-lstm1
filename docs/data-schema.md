@@ -67,7 +67,7 @@ Grain:
 
 Expected columns:
 - `vehicle_id` – matches operational readouts and specifications.
-- `class` or `proximity_label` – integer in {0, 1, 2, 3, 4} representing proximity to failure:
+- `class_label` (or similar) – integer in {0, 1, 2, 3, 4} representing proximity to failure:
   - 0: >48 time steps before failure
   - 1: 48–24 time steps before failure
   - 2: 24–12 time steps before failure
@@ -125,4 +125,3 @@ To fully validate the schema against local files:
   - Confirm vehicle counts and sequence length distributions.
 
 Any discrepancies between this document and actual CSV headers should be reconciled and documented here as they are discovered.
-
