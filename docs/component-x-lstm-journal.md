@@ -288,8 +288,162 @@ Implications for later phases:
 
 ---
 
+## Phase 2 – Label Engineering for 5-Class Problem
+
+**Date:** (initial training label construction)  
+**Scope:** Define the 5-class time-to-failure mapping, build training labels from TTE + operational data, and document labeling policies.
+
+### 1. Proximity Class Mapping
+
+Time-to-failure (TTF, in `time_step` units) is mapped to classes as:
+
+- Class 4: `0 <= TTF <= 6`
+- Class 3: `6 < TTF <= 12`
+- Class 2: `12 < TTF <= 24`
+- Class 1: `24 < TTF <= 48`
+- Class 0: `TTF > 48` or TTF unknown (censored)
+
+Implementation:
+
+- Functions in `src/data/labels.py`:
+  - `time_to_proximity_class(time_to_failure: float) -> int`
+  - `time_to_proximity_class_array(time_to_failure: np.ndarray) -> np.ndarray`
+- Negative TTF values (reference after failure) are treated as invalid and are excluded from label generation.
+- TTF `NaN` is interpreted as “unknown” and mapped to class 0.
+
+This mapping follows the windows described in `data/dataset-overview.md` and the underlying Scientific Data article.
+
+### 2. Training Label Construction Inputs
+
+Files used:
+
+- `train_tte.csv`:
+  - `vehicle_id`
+  - `length_of_study_time_step`
+  - `in_study_repair` (1 = event, 0 = censored)
+- `train_operational_readouts.csv`:
+  - Only `vehicle_id` and `time_step` columns are read for labeling.
+- Validation labels:
+  - `validation_labels.csv` with `vehicle_id`, `class_label` (used for distribution cross-checks, not modified).
+
+### 3. Event Vehicles – Multiple Reference Points Per Class
+
+Event vehicles:
+
+- Determined by `in_study_repair = 1` in `train_tte.csv` (N = 2,272).
+- For each event vehicle, we know:
+  - `failure_time = length_of_study_time_step`
+  - A timeline of `time_step` values in `train_operational_readouts.csv`.
+
+Algorithm (in `build_training_proximity_labels`):
+
+1. Collect time_steps for event vehicles only:
+   - Read `train_operational_readouts.csv` in chunks (`chunksize=200_000`) with:
+     - `usecols=["vehicle_id", "time_step"]`
+   - Filter each chunk to event vehicle IDs (2,272 IDs).
+   - Accumulate and sort time_steps per event vehicle:
+     - `vehicle_times[vehicle_id] = sorted list of time_step values`
+   - This avoids loading full 107-feature rows into memory and only stores sequences for event vehicles.
+
+2. For each event vehicle:
+   - Compute time-to-failure per time_step:
+     - `TTF = failure_time - time_step`
+   - Keep only `TTF > 0` (observations strictly before failure).
+   - Map each TTF to a class using `time_to_proximity_class_array`.
+   - For each non-zero class `c ∈ {1,2,3,4}`:
+     - Identify time_steps mapped to `c`.
+     - If any exist, randomly select one time_step (using a fixed random seed for reproducibility).
+     - Record:
+       - `vehicle_id`
+       - `reference_time_step` (selected time_step)
+       - `time_to_failure` (TTF at that time_step)
+       - `class_label = c`
+
+Outcome:
+
+- Each event vehicle contributes up to 4 labeled examples (one per non-zero class that has at least one valid time_step).
+- All references are actual observed time_steps from the operational data, ensuring compatibility with later sequence construction.
+
+### 4. Censored Vehicles – Class 0 Policy
+
+Censored vehicles:
+
+- Determined by `in_study_repair = 0` in `train_tte.csv` (N = 21,278).
+- True time-to-failure is unknown.
+
+Policy:
+
+- For each censored vehicle, create one labeled example:
+  - `vehicle_id`
+  - `reference_time_step = length_of_study_time_step`
+  - `time_to_failure = NaN` (unknown)
+  - `class_label = 0`
+
+Rationale:
+
+- Class 0 encompasses “far from failure” and censored cases by design.
+- This mirrors the dominance of class 0 in validation/test while preserving a simple, interpretable policy.
+- The `TrainLabelConfig.include_censored` flag in `src/data/labels.py` allows experiments that exclude censored vehicles if desired.
+
+### 5. Generated Training Labels and Class Distribution
+
+Command used:
+
+- ```bash
+  .\.venv\Scripts\python.exe -m src.data.labels \
+    --tte data/train_tte.csv \
+    --operational data/train_operational_readouts.csv \
+    --output data/train_proximity_labels.csv \
+    --chunksize 200000
+  ```
+
+Output file:
+
+- `data/train_proximity_labels.csv` with columns:
+  - `vehicle_id`
+  - `reference_time_step`
+  - `time_to_failure`
+  - `class_label`
+
+Class distribution (initial run):
+
+- Total labels: **29,583**
+- Class 0: 21,278 (**71.926%**)
+- Class 1: 2,232 (**7.545%**)
+- Class 2: 2,150 (**7.268%**)
+- Class 3: 1,923 (**6.500%**)
+- Class 4: 2,000 (**6.761%**)
+
+Interpretation:
+
+- Class 0 remains the majority class, reflecting the large number of censored vehicles and the “far from failure” regime, but:
+  - Non-zero classes (1–4) are now all represented with a few thousand examples each.
+  - The training distribution is more balanced than validation/test while retaining realistic skew.
+- This should provide enough signal for the LSTM to learn separations among proximity classes, especially once sequence-level sampling (Phase 3) is applied.
+
+### 6. Consistency with Validation Labels
+
+Validation distribution (from `validation_labels.csv`):
+
+- Class 0: 4,910 (**97.305%**)
+- Class 1: 16 (**0.317%**)
+- Class 2: 14 (**0.277%**)
+- Class 3: 30 (**0.595%**)
+- Class 4: 76 (**1.506%**)
+
+Consistency notes:
+
+- The class windows and semantics for TTF are identical between training labels and validation/test labels.
+- The main difference is density:
+  - Validation/test: one randomly chosen last readout per vehicle, resulting in extreme class 0 dominance.
+  - Training: multiple reference points per event vehicle to cover all non-zero classes, plus one class 0 example for each censored vehicle.
+- A model trained on `train_proximity_labels.csv` is therefore aligned with the official label semantics, but with richer supervision on rare proximity classes.
+
+For additional detail and rationale, see `docs/labeling-decisions.md`.
+
+---
+
 Future phases (2 and beyond) will append their own sections here with:
 - New findings (label construction, sequence statistics, feature transformations, model behavior).
 - Explicit commands/scripts used.
 - Key decisions and rationales.
-
