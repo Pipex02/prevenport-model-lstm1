@@ -609,7 +609,136 @@ Interpretation:
 
 ---
 
-Future phases (2 and beyond) will append their own sections here with:
+## Phase 4 – Feature Engineering & Normalization
+
+**Date:** (initial feature stats + transformer)  
+**Scope:** Define how to normalize and impute the Component X operational variables using training data only, and encapsulate this logic in a reusable transformer for train/val/test.
+
+### 1. Objectives and key decisions
+
+- **Data used to fit statistics:**
+  - Only `data/train_operational_readouts.csv` (training split).
+  - Read in chunks to avoid loading the full CSV into memory.
+- **Feature grouping:**
+  - Counter features: `171_0, 666_0, 427_0, 837_0, 309_0, 835_0, 370_0, 100_0`.
+  - Histogram features: all other signal columns (97 bins in total).
+- **Normalization strategy:**
+  - Counters → `log1p` + z-normalization:
+    - Compute mean and standard deviation of `log1p(value)` for each counter.
+    - At transform time, apply the same `log1p` and then `(x - mean) / std`.
+  - Histograms → direct z-normalization:
+    - Mean and standard deviation computed on raw values.
+- **Missing value handling:**
+  - Simple imputation with the **feature mean** (in the transformed space—log or linear as appropriate).
+- **Padding after normalization:**
+  - Use `seq_lengths` to set all padded positions at the start of each sequence to 0, so padding is exactly 0 in normalized space.
+
+### 2. Statistics computation – `src/features/transformer.py`
+
+New module:
+
+- `src/features/transformer.py`
+
+Main components:
+
+- `FeatureStatsConfig`:
+  - `operational_path` (default `data/train_operational_readouts.csv`).
+  - `output_path` (default `artifacts/feature_stats.json`).
+  - `chunksize` (default `200_000`).
+- `compute_feature_stats(config)`:
+  - Infers feature columns as all columns except `vehicle_id` and `time_step` (105 in total).
+  - Splits into:
+    - `counters`: intersection between columns and `COUNTER_FEATURES`.
+    - `histograms`: the remaining features.
+  - For each CSV chunk:
+    - Casts feature columns to `float`.
+    - If the column is a counter → applies `log1p` before accumulating sums.
+    - For each column:
+      - Accumulates `sum`, `sum_sq`, and `count`, ignoring NaNs.
+  - At the end, for each feature computes:
+    - `mean = sum / count`
+    - `var = max(sum_sq / count - mean^2, eps)` with `eps = 1e-8`
+    - `std = sqrt(var)`
+    - `transform = "log1p-znorm"` for counters, `"znorm"` for histograms.
+  - Writes a JSON with structure:
+    - `feature_order`: ordered list of feature names.
+    - `counters`, `histograms`.
+    - `per_feature[col] = { "transform", "mean", "std" }`.
+
+Command used:
+
+```bash
+.\.venv\Scripts\python.exe -m src.features.transformer ^
+  --operational data/train_operational_readouts.csv ^
+  --output artifacts/feature_stats.json ^
+  --chunksize 200000
+```
+
+Reported output:
+
+- Number of features: 105.
+- Counters: 8.
+- Histograms: 97.
+- Stats file: `artifacts/feature_stats.json`.
+
+### 3. Reusable transformer – `FeatureTransformer`
+
+Main class:
+
+- `FeatureTransformer` (in `src/features/transformer.py`):
+  - `FeatureTransformer.from_json("artifacts/feature_stats.json")` loads:
+    - `feature_order` (defining the order of the feature dimension in sequences).
+    - `per_feature` with `transform`, `mean`, `std` per column.
+  - `transform_sequences(sequences, seq_lengths, copy=True)` applies normalization to sequence tensors:
+    - Expected input:
+      - `sequences`: tensor `(N, L, F)` with `F == len(feature_order)`.
+      - `seq_lengths`: vector `(N,)` with true (unpadded) sequence lengths.
+    - For each feature `j`:
+      - Reads specification `spec = per_feature[feat]`:
+        - If `transform == "log1p-znorm"`:
+          - Applies `log1p` to values (assuming non-negative inputs).
+        - Imputes NaNs with `mean`.
+        - Normalizes: `vals = (vals - mean) / std`.
+      - Writes back column `j` in the transformed tensor.
+    - After all features are normalized:
+      - For each sequence `i`:
+        - Computes `pad_len = L - seq_lengths[i]`.
+        - If `pad_len > 0`, sets `arr[i, :pad_len, :] = 0`:
+          - Ensures padding is exactly 0 across all features, consistent for train/val/test.
+
+Example usage with prebuilt sequences:
+
+```python
+import numpy as np
+from src.features.transformer import FeatureTransformer
+
+data = np.load("data/train_sequences_sample.npz")
+sequences = data["sequences"]
+seq_lengths = data["seq_lengths"]
+
+ft = FeatureTransformer.from_json("artifacts/feature_stats.json")
+sequences_norm = ft.transform_sequences(sequences, seq_lengths)
+```
+
+### 4. Implicaciones para siguientes fases
+
+- **Phase 5 (Dataset & DataLoader):**
+  - El `Dataset` de PyTorch podrá:
+    - Cargar secuencias y longitudes desde `.npz` (`train_sequences*.npz`).
+    - Aplicar `FeatureTransformer` en `__getitem__` o pre-normalizar
+      todas las secuencias antes del entrenamiento.
+  - El padding ya está normalizado a 0, lo que simplifica el uso de packing o máscaras en el LSTM.
+- **Phase 6 (Modelo LSTM):**
+  - El modelo recibirá entradas con media 0 y varianza ~1 por feature, lo que favorece una convergencia más estable.
+  - Las features de contadores tienen escala comprimida (`log1p`), reduciendo el impacto de colas largas.
+- **Generalización / reproducibilidad:**
+  - El archivo `artifacts/feature_stats.json` documenta explícitamente el tipo de transformación y los parámetros por feature, permitiendo:
+    - Reproducir experimentos.
+    - Aplicar el mismo preprocesamiento a nuevas particiones (validación, test, producción).
+
+---
+
+Future phases (5 and beyond) will append their own sections here with:
 - New findings (label construction, sequence statistics, feature transformations, model behavior).
 - Explicit commands/scripts used.
 - Key decisions and rationales.
