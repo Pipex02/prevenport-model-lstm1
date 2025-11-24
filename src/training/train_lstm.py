@@ -272,6 +272,34 @@ def save_checkpoint(
     torch.save(state, path)
 
 
+def append_metrics_row(
+    metrics_path: Path,
+    epoch: int,
+    train_loss: float,
+    train_acc: float,
+    val_loss: Optional[float],
+    val_acc: Optional[float],
+    val_macro_f1: Optional[float],
+    lr: float,
+) -> None:
+    is_new = not metrics_path.exists()
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_path.open("a", encoding="utf-8") as f:
+        if is_new:
+            f.write(
+                "epoch,train_loss,train_acc,val_loss,val_acc,val_macro_f1,lr\n"
+            )
+        f.write(
+            f"{epoch},"
+            f"{train_loss:.6f},"
+            f"{train_acc:.6f},"
+            f"{'' if val_loss is None else f'{val_loss:.6f}'},"
+            f"{'' if val_acc is None else f'{val_acc:.6f}'},"
+            f"{'' if val_macro_f1 is None else f'{val_macro_f1:.6f}'},"
+            f"{lr:.8f}\n"
+        )
+
+
 def load_checkpoint(
     path: Path,
     model: nn.Module,
@@ -413,6 +441,8 @@ def main() -> None:
         )
         print(f"  Train: loss={train_loss:.4f}, acc={train_acc:.4f}")
 
+        val_loss = None
+        val_acc = None
         if val_loader is not None:
             val_loss, val_acc, val_macro_f1 = evaluate(
                 model, val_loader, criterion, device
@@ -427,6 +457,20 @@ def main() -> None:
         # Step scheduler
         if scheduler is not None:
             scheduler.step()
+
+        # Log metrics for this epoch
+        current_lr = optimizer.param_groups[0]["lr"]
+        metrics_path = output_dir / "metrics.csv"
+        append_metrics_row(
+            metrics_path=metrics_path,
+            epoch=epoch,
+            train_loss=train_loss,
+            train_acc=train_acc,
+            val_loss=val_loss,
+            val_acc=val_acc,
+            val_macro_f1=val_macro_f1 if val_loader is not None else None,
+            lr=current_lr,
+        )
 
         # Save last checkpoint
         last_ckpt = output_dir / "last.pt"
@@ -444,4 +488,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
