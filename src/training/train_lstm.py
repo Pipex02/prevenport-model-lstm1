@@ -136,7 +136,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--class-weighted",
         action="store_true",
-        help="Use class-weighted sampling and/or loss.",
+        help=(
+            "Deprecated shorthand: enable both weighted loss and "
+            "weighted sampler. Prefer --weighted-loss and/or "
+            "--weighted-sampler explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--weighted-loss",
+        action="store_true",
+        help="Use class-weighted CrossEntropyLoss based on train label frequencies.",
+    )
+    parser.add_argument(
+        "--weighted-sampler",
+        action="store_true",
+        help="Use WeightedRandomSampler in the train DataLoader based on label frequencies.",
     )
 
     # Misc
@@ -186,12 +200,15 @@ def build_datasets_and_loaders(
     )
 
     # Train DataLoader (with optional class weighting sampler).
+    # Decide sampler behaviour
+    use_weighted_sampler = args.weighted_sampler or args.class_weighted
+
     train_loader = create_sequence_dataloader(
         npz_path=args.train_npz,
         feature_stats_path=args.feature_stats,
         batch_size=args.batch_size,
-        shuffle=not args.class_weighted,
-        class_weighted=args.class_weighted,
+        shuffle=not use_weighted_sampler,
+        class_weighted=use_weighted_sampler,
         num_workers=0,
         device=None,
     )
@@ -411,7 +428,8 @@ def main() -> None:
     model, optimizer, scheduler = build_model_and_optim(args, input_size, device)
 
     # Loss
-    if args.class_weighted:
+    use_weighted_loss = args.weighted_loss or args.class_weighted
+    if use_weighted_loss:
         class_weights = compute_class_weights(train_dataset.labels).to(device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
