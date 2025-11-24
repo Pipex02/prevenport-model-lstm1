@@ -1127,7 +1127,51 @@ python -m src.training.train_lstm \
 
 This will produce:
 
-- `artifacts/last.pt` – latest checkpoint (for resume).
-- `artifacts/best.pt` – checkpoint with best validation macro F1.
+- `artifacts/last.pt` - latest checkpoint (for resume).
+- `artifacts/best.pt` - checkpoint with best validation macro F1.
 
 ---
+
+## Phase 8 – Evaluation, Error Analysis, and Calibration
+
+**Date:** 2025-11-24  
+**Scope:** Automate the Phase 8 diagnostics (confusion matrix, per-class PR/ROC curves, and calibration) so every run can be analyzed without ad-hoc notebooks.
+
+### 1. Evaluation tooling
+
+- Implemented `src/training/evaluate.py`, a CLI wrapper that loads any checkpoint + `.npz` split and generates the complete evaluation bundle.
+- Typical invocation (used for Run4):
+  ```bash
+  python -m src.training.evaluate \
+    --npz data/val_sequences.npz \
+    --checkpoint artifacts_colab_run4/best.pt \
+    --feature-stats artifacts/feature_stats.json \
+    --output-dir artifacts/evaluations/run4_val
+  ```
+- Internals:
+  - Restores the LSTM configuration from checkpoint metadata.
+  - Streams batches through the model on CPU or GPU (auto device selection).
+  - Logs headline metrics plus JSON/PNG artifacts for plots.
+  - Falls back gracefully if plotting deps (matplotlib) are missing, making it safe for headless runs.
+
+### 2. Outputs captured for Run4
+
+Artifacts are stored in `artifacts/evaluations/run4_val/`:
+
+| Artifact | Notes |
+| --- | --- |
+| `summary_metrics.json` | Accuracy 0.548, macro F1 0.155, weighted F1 0.692. |
+| `classification_report.json` | Per-class precision/recall/F1/support using the descriptive class text. |
+| `confusion_matrix.csv/.png` | Matrix re-labelled with numeric class IDs 0–4 to keep figures concise. |
+| `roc_curves.json/.png` | ROC curve coordinates + AUC per class (keyed by class ID). |
+| `pr_curves.json/.png` | Precision/Recall curve coordinates + area per class (class ID keys). |
+| `reliability.json/.png` | Calibration histogram for top-1 probabilities. |
+
+Regenerating the folder with different `--npz` / `--checkpoint` pairs gives comparable Phase‑8 packages for future experiments.
+
+### 3. Findings
+
+- Confusion matrix: while 2,734 class‑0 samples are correct, >2,100 majority-class sequences still leak into classes 2 and 4, illustrating how balanced loss keeps minority recall alive at the expense of false alarms on class 0.
+- Minority support is tiny (e.g., only ~40 validation samples for classes 1–4 combined), so ROC/PR curves remain noisy but still show classes 2 and 4 benefitting the most from the weighting tweaks.
+- Calibration: the reliability diagram shows that high-confidence predictions (0.8–0.9) achieve only ~0.6 empirical accuracy, so temperature scaling or conservative alert thresholds will be needed before deployment.
+- With this tooling in place the Phase‑8 plan items are closed, and we can advance to Phase 9 (experiment tracking) knowing every run can emit a consistent diagnostics bundle.

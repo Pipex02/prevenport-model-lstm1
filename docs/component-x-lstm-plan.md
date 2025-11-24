@@ -217,13 +217,26 @@ Deliverable: reproducible training run (single command) that outputs metrics and
   - Compute detailed classification report by class.
   - Plot confusion matrix and per-class ROC/PR curves.
 - Imbalance-focused checks:
-  - Inspect recall for classes 1–4.
+  - Inspect recall for classes 1-4.
   - Evaluate macro and weighted F1.
 - Calibration:
   - Assess probability calibration (e.g., reliability diagrams).
   - If needed, apply temperature scaling or isotonic regression using a held-out set.
 - Save evaluation outputs:
   - Write a short report notebook/script into `notebooks/evaluation.ipynb` or `src/training/evaluate.py`.
+
+**Implementation**
+- `src/training/evaluate.py` now produces all required artifacts (classification report, confusion matrix visuals, ROC/PR curves, and a reliability diagram) for any checkpoint:
+
+```bash
+python -m src.training.evaluate \
+  --npz data/val_sequences.npz \
+  --checkpoint artifacts_colab_run4/best.pt \
+  --feature-stats artifacts/feature_stats.json \
+  --output-dir artifacts/evaluations/run4_val
+```
+
+The command above writes JSON/CSV metrics plus PNG plots so the journal and thesis can embed Phase 8 findings without manual notebook work.
 
 Deliverable: documented evaluation results, plots, and insights to guide next iterations.
 
