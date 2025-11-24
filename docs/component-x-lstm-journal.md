@@ -1175,3 +1175,33 @@ Regenerating the folder with different `--npz` / `--checkpoint` pairs gives comp
 - Minority support is tiny (e.g., only ~40 validation samples for classes 1–4 combined), so ROC/PR curves remain noisy but still show classes 2 and 4 benefitting the most from the weighting tweaks.
 - Calibration: the reliability diagram shows that high-confidence predictions (0.8–0.9) achieve only ~0.6 empirical accuracy, so temperature scaling or conservative alert thresholds will be needed before deployment.
 - With this tooling in place the Phase‑8 plan items are closed, and we can advance to Phase 9 (experiment tracking) knowing every run can emit a consistent diagnostics bundle.
+
+## Phase 9 – Experiment Tracking & Reproducibility
+
+**Date:** 2025-11-24  
+**Scope:** Wire MLflow into the baseline training pipeline so every experiment records params/metrics/artifacts automatically, and document how to run/promote experiments.
+
+### 1. MLflow wiring
+
+- Added optional flags to `src/training/train_lstm.py`:
+  - `--mlflow` toggles logging.
+  - `--mlflow-tracking-uri`, `--mlflow-experiment`, `--mlflow-run-name` control the destination.
+- When enabled:
+  - The script starts an MLflow run before training and logs all CLI arguments as parameters.
+  - After each epoch it logs metrics (`train_loss`, `train_acc`, `val_loss`, `val_acc`, `val_macro_f1`, and learning rate).
+  - On completion it uploads `metrics.csv`, `last.pt`, `best.pt`, and the referenced `feature_stats.json`.
+- Fails fast if MLflow isn’t installed but the flag is set, which keeps local CPU dev loops unaffected unless needed.
+
+### 2. Experiment playbook (`docs/experiments.md`)
+
+- Captures:
+  - Prereqs (install MLflow, start tracking URI).
+  - Naming convention for runs (`{data_version}-{window_size}-{model_tag}-{run_id}`).
+  - Exact CLI invocation template for GPU training.
+  - Promotion criteria (macro-F1 improvements + uploaded evaluation bundle).
+- Serves as the canonical reference for future teammates.
+
+### 3. Next actions
+
+- For any heavy run, start MLflow on the GPU/Colab environment and launch training with `--mlflow`.
+- After training finishes, generate the Phase 8 evaluation bundle and attach it to the MLflow run (either through `mlflow.log_artifact` or a manual upload) before promoting the checkpoint.

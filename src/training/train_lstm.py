@@ -26,6 +26,11 @@ import numpy as np
 from sklearn.metrics import accuracy_score, f1_score
 
 try:
+    import mlflow
+except ImportError:  # pragma: no cover - optional dependency
+    mlflow = None
+
+try:
     import torch
     from torch import nn
     from torch.optim import AdamW
@@ -178,6 +183,29 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help="How many batches to wait before logging training status.",
     )
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Enable MLflow logging for parameters, metrics, and artifacts.",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        type=str,
+        default=None,
+        help="Optional MLflow tracking URI. Defaults to local ./mlruns if unset.",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        type=str,
+        default="component-x-lstm",
+        help="MLflow experiment name.",
+    )
+    parser.add_argument(
+        "--mlflow-run-name",
+        type=str,
+        default=None,
+        help="Optional MLflow run name. If omitted MLflow auto-generates one.",
+    )
 
     return parser.parse_args()
 
@@ -306,7 +334,7 @@ def append_metrics_row(
         if is_new:
             f.write(
                 "epoch,train_loss,train_acc,val_loss,val_acc,val_macro_f1,lr\n"
-            )
+        )
         f.write(
             f"{epoch},"
             f"{train_loss:.6f},"
@@ -316,6 +344,42 @@ def append_metrics_row(
             f"{'' if val_macro_f1 is None else f'{val_macro_f1:.6f}'},"
             f"{lr:.8f}\n"
         )
+
+
+def start_mlflow_run(args: argparse.Namespace):
+    if not getattr(args, "mlflow", False):
+        return None
+    if mlflow is None:
+        raise ImportError(
+            "mlflow is not installed. Install it (pip install mlflow) or disable --mlflow."
+        )
+    if args.mlflow_tracking_uri:
+        mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+    experiment = args.mlflow_experiment or "component-x-lstm"
+    mlflow.set_experiment(experiment)
+    run = mlflow.start_run(run_name=args.mlflow_run_name)
+
+    loggable_params = {}
+    for key, value in vars(args).items():
+        if isinstance(value, (int, float, str, bool)) or value is None:
+            loggable_params[key] = value
+    mlflow.log_params({k: v for k, v in loggable_params.items() if v is not None})
+    return run
+
+
+def log_mlflow_metrics(epoch: int, metrics: Dict[str, Optional[float]]) -> None:
+    if mlflow is None or mlflow.active_run() is None:
+        return
+    for key, value in metrics.items():
+        if value is not None:
+            mlflow.log_metric(key, float(value), step=epoch)
+
+
+def log_mlflow_artifact(path: Path) -> None:
+    if mlflow is None or mlflow.active_run() is None:
+        return
+    if path.exists():
+        mlflow.log_artifact(str(path))
 
 
 def load_checkpoint(
@@ -451,6 +515,11 @@ def main() -> None:
         else:
             print(f"Checkpoint {ckpt_path} not found; starting from scratch.")
 
+    mlflow_run = start_mlflow_run(args)
+
+    metrics_path = output_dir / "metrics.csv"
+    best_ckpt = output_dir / "best.pt"
+
     # Training loop
     for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
@@ -479,7 +548,6 @@ def main() -> None:
 
         # Log metrics for this epoch
         current_lr = optimizer.param_groups[0]["lr"]
-        metrics_path = output_dir / "metrics.csv"
         append_metrics_row(
             metrics_path=metrics_path,
             epoch=epoch,
@@ -495,14 +563,33 @@ def main() -> None:
         last_ckpt = output_dir / "last.pt"
         save_checkpoint(last_ckpt, epoch, model, optimizer, scheduler, best_val_f1, args)
 
+        log_mlflow_metrics(
+            epoch,
+            {
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "val_macro_f1": val_macro_f1 if val_loader is not None else None,
+                "lr": current_lr,
+            },
+        )
+
         # Save best checkpoint based on validation macro F1
         if val_loader is not None and val_macro_f1 > best_val_f1:
             best_val_f1 = val_macro_f1
-            best_ckpt = output_dir / "best.pt"
             print(
                 f"  New best macro F1={best_val_f1:.4f}; saving checkpoint to {best_ckpt}"
             )
             save_checkpoint(best_ckpt, epoch, model, optimizer, scheduler, best_val_f1, args)
+
+    if mlflow_run is not None:
+        log_mlflow_artifact(metrics_path)
+        log_mlflow_artifact(last_ckpt)
+        log_mlflow_artifact(best_ckpt)
+        feature_stats_path = Path(args.feature_stats)
+        log_mlflow_artifact(feature_stats_path)
+        mlflow.end_run()
 
 
 if __name__ == "__main__":

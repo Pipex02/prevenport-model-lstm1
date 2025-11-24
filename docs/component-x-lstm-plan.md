@@ -217,7 +217,7 @@ Deliverable: reproducible training run (single command) that outputs metrics and
   - Compute detailed classification report by class.
   - Plot confusion matrix and per-class ROC/PR curves.
 - Imbalance-focused checks:
-  - Inspect recall for classes 1-4.
+  - Inspect recall for classes 1–4.
   - Evaluate macro and weighted F1.
 - Calibration:
   - Assess probability calibration (e.g., reliability diagrams).
@@ -242,7 +242,7 @@ Deliverable: documented evaluation results, plots, and insights to guide next it
 
 ---
 
-## Phase 9 – Experiment Tracking & Reproducibility
+## Phase 9 - Experiment Tracking & Reproducibility
 
 **Objectives**
 - Make it easy to rerun experiments and compare configurations.
@@ -256,9 +256,14 @@ Deliverable: documented evaluation results, plots, and insights to guide next it
   - Include data version, window size, model architecture, and run ID.
 - Write a short `docs/experiments.md` specifying:
   - How to start new experiments.
-  - Which metrics determine “promotion” to best model.
+  - Which metrics determine "promotion" to best model.
 
 Deliverable: fully reproducible experiment setup with logs and artifacts per run.
+
+**Implementation**
+- Integrated optional MLflow logging into `src/training/train_lstm.py` (flags: `--mlflow`, `--mlflow-tracking-uri`, `--mlflow-experiment`, `--mlflow-run-name`).
+- Every epoch now streams metrics to MLflow and, when the run finishes, the script logs key artifacts (`metrics.csv`, `last.pt`, `best.pt`, and the referenced `feature_stats.json`).
+- Authored `docs/experiments.md` covering run naming, launch instructions, and promotion criteria so collaborators can follow the same workflow.
 
 ---
 
