@@ -219,7 +219,8 @@ class FeatureTransformer:
             vals = arr[:, :, j]
 
             if transform_type == "log1p-znorm":
-                # Assumes non-negative inputs; log1p(0) = 0
+                # Clamp to non-negative to avoid warnings and undefined log1p
+                vals = np.clip(vals, a_min=0.0, a_max=None)
                 vals = np.log1p(vals, where=~np.isnan(vals))
 
             # Impute NaNs with mean in transformed space

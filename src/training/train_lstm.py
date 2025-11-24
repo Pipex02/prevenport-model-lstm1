@@ -254,11 +254,12 @@ def build_model_and_optim(
 
 def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
     counts = np.bincount(labels.astype(int))
+    total = counts.sum()
     num_classes = len(counts)
     weights = np.zeros(num_classes, dtype=np.float32)
     for c, cnt in enumerate(counts):
         if cnt > 0:
-            weights[c] = 1.0 / float(cnt)
+            weights[c] = total / (num_classes * float(cnt))
     if weights.max() == 0:
         # Fallback to uniform weights if something went wrong
         weights[:] = 1.0
