@@ -206,6 +206,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional MLflow run name. If omitted MLflow auto-generates one.",
     )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=None,
+        help="Optional max norm for gradient clipping (set to 0 or omit to disable).",
+    )
 
     return parser.parse_args()
 
@@ -410,6 +416,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     log_interval: int,
+    grad_clip: Optional[float] = None,
 ) -> Tuple[float, float]:
     model.train()
     running_loss = 0.0
@@ -425,6 +432,8 @@ def train_one_epoch(
         logits = model(seq, seq_lengths)
         loss = criterion(logits, labels)
         loss.backward()
+        if grad_clip is not None and grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
         running_loss += loss.item() * seq.size(0)
@@ -519,13 +528,20 @@ def main() -> None:
 
     metrics_path = output_dir / "metrics.csv"
     best_ckpt = output_dir / "best.pt"
+    last_ckpt = output_dir / "last.pt"
 
     # Training loop
     for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
 
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, args.log_interval
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            args.log_interval,
+            grad_clip=args.grad_clip,
         )
         print(f"  Train: loss={train_loss:.4f}, acc={train_acc:.4f}")
 
@@ -560,7 +576,6 @@ def main() -> None:
         )
 
         # Save last checkpoint
-        last_ckpt = output_dir / "last.pt"
         save_checkpoint(last_ckpt, epoch, model, optimizer, scheduler, best_val_f1, args)
 
         log_mlflow_metrics(
