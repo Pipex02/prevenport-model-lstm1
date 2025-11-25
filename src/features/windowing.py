@@ -35,9 +35,9 @@ import pandas as pd
 class SequenceWindowConfig:
     """Configuration for building fixed-length sequences."""
 
-    operational_path: Path = Path("data/train_operational_readouts.csv")
-    labels_path: Path = Path("data/train_proximity_labels.csv")
-    output_path: Optional[Path] = None  # e.g., Path("data/train_sequences.npz")
+    operational_path: Path = Path("data/raw/train_operational_readouts.csv")
+    labels_path: Path = Path("data/processed/train_proximity_labels.csv")
+    output_path: Optional[Path] = None  # e.g., Path("data/processed/train_sequences.npz")
     window_size: int = 128
     pad_value: float = 0.0
     max_windows_per_vehicle: Optional[int] = None
@@ -176,19 +176,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--operational",
         type=str,
-        default="data/train_operational_readouts.csv",
+        default="data/raw/train_operational_readouts.csv",
         help="Path to train_operational_readouts.csv.",
     )
     parser.add_argument(
         "--labels",
         type=str,
-        default="data/train_proximity_labels.csv",
+        default="data/processed/train_proximity_labels.csv",
         help="Path to train_proximity_labels.csv.",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="data/train_sequences.npz",
+        default="data/processed/train_sequences.npz",
         help="Output .npz path for sequences (set empty to skip saving).",
     )
     parser.add_argument(

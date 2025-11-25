@@ -8,7 +8,7 @@ This module:
   - `train_operational_readouts.csv` (per-vehicle time_step series)
 
 Resulting training labels can be written to a CSV such as:
-    data/train_proximity_labels.csv
+    data/processed/train_proximity_labels.csv
 with columns:
     vehicle_id, reference_time_step, time_to_failure, class_label
 """
@@ -88,9 +88,9 @@ def time_to_proximity_class_array(time_to_failure: np.ndarray) -> np.ndarray:
 class TrainLabelConfig:
     """Configuration for building training proximity labels."""
 
-    train_tte_path: Path = Path("data/train_tte.csv")
-    train_operational_path: Path = Path("data/train_operational_readouts.csv")
-    output_path: Path = Path("data/train_proximity_labels.csv")
+    train_tte_path: Path = Path("data/raw/train_tte.csv")
+    train_operational_path: Path = Path("data/raw/train_operational_readouts.csv")
+    output_path: Path = Path("data/processed/train_proximity_labels.csv")
     chunksize: int = 200_000
     random_seed: int = 42
     include_censored: bool = True
@@ -257,19 +257,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tte",
         type=str,
-        default="data/train_tte.csv",
+        default="data/raw/train_tte.csv",
         help="Path to train_tte.csv.",
     )
     parser.add_argument(
         "--operational",
         type=str,
-        default="data/train_operational_readouts.csv",
+        default="data/raw/train_operational_readouts.csv",
         help="Path to train_operational_readouts.csv.",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="data/train_proximity_labels.csv",
+        default="data/processed/train_proximity_labels.csv",
         help="Output path for generated training labels CSV.",
     )
     parser.add_argument(

@@ -40,7 +40,7 @@ COUNTER_FEATURES = {
 class FeatureStatsConfig:
     """Configuration for computing feature statistics on operational data."""
 
-    operational_path: Path = Path("data/train_operational_readouts.csv")
+    operational_path: Path = Path("data/raw/train_operational_readouts.csv")
     output_path: Path = Path("artifacts/feature_stats.json")
     chunksize: int = 200_000
 
@@ -253,7 +253,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--operational",
         type=str,
-        default="data/train_operational_readouts.csv",
+        default="data/raw/train_operational_readouts.csv",
         help="Path to train_operational_readouts.csv.",
     )
     parser.add_argument(

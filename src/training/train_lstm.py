@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--train-npz",
         type=str,
-        default="data/train_sequences.npz",
+        default="data/processed/train_sequences.npz",
         help="Path to training sequences .npz file.",
     )
     parser.add_argument(
