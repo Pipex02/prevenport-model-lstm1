@@ -207,6 +207,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional MLflow run name. If omitted MLflow auto-generates one.",
     )
     parser.add_argument(
+        "--focal-loss",
+        action="store_true",
+        help="Use focal loss instead of cross-entropy.",
+    )
+    parser.add_argument(
         "--grad-clip",
         type=float,
         default=None,
@@ -286,17 +291,21 @@ def build_model_and_optim(
     return model, optimizer, scheduler
 
 
-def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
+def compute_class_weights(labels: np.ndarray, method: str = "sqrt") -> torch.Tensor:
+    """Balanced class weights with optional dampening."""
     counts = np.bincount(labels.astype(int))
     total = counts.sum()
     num_classes = len(counts)
     weights = np.zeros(num_classes, dtype=np.float32)
     for c, cnt in enumerate(counts):
         if cnt > 0:
-            weights[c] = total / (num_classes * float(cnt))
+            w = total / (num_classes * float(cnt))
+            weights[c] = np.sqrt(w) if method == "sqrt" else w
+
     if weights.max() == 0:
-        # Fallback to uniform weights if something went wrong
         weights[:] = 1.0
+    else:
+        weights = weights / weights.sum() * num_classes
     return torch.from_numpy(weights)
 
 
@@ -322,6 +331,27 @@ def save_checkpoint(
     if torch.cuda.is_available():
         state["cuda_rng_state"] = torch.cuda.get_rng_state()
     torch.save(state, path)
+
+
+class FocalLoss(nn.Module):
+    """Simple multi-class focal loss."""
+
+    def __init__(self, alpha: float = 1.0, gamma: float = 2.0, reduction: str = "mean") -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(reduction="none")
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = self.ce(inputs, targets)
+        pt = torch.exp(-ce_loss)
+        loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        if self.reduction == "sum":
+            return loss.sum()
+        if self.reduction == "none":
+            return loss
+        return loss.mean()
 
 
 def append_metrics_row(
@@ -503,8 +533,13 @@ def main() -> None:
 
     # Loss
     use_weighted_loss = args.weighted_loss or args.class_weighted
-    if use_weighted_loss:
-        class_weights = compute_class_weights(train_dataset.labels).to(device)
+    if args.focal_loss:
+        print("Using focal loss (gamma=2.0).")
+        criterion = FocalLoss(gamma=2.0).to(device)
+    elif use_weighted_loss:
+        print("Using dampened (sqrt) class weights.")
+        class_weights = compute_class_weights(train_dataset.labels, method="sqrt").to(device)
+        print(f"  Weights: {class_weights.cpu().numpy()}")
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
         criterion = nn.CrossEntropyLoss()
