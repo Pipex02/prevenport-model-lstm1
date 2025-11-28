@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -41,6 +41,10 @@ class SequenceWindowConfig:
     window_size: int = 128
     pad_value: float = 0.0
     max_windows_per_vehicle: Optional[int] = None
+    include_classes: Optional[Sequence[int]] = None
+    binary_target: bool = False
+    binary_positive_classes: Optional[Sequence[int]] = None
+    label_mapping: Optional[Dict[int, int]] = None
 
 
 def build_sequences_for_training(
@@ -63,15 +67,34 @@ def build_sequences_for_training(
         raise ValueError(f"No labels found in {config.labels_path}")
 
     # Ensure expected columns exist
-    required_label_cols = {"vehicle_id", "reference_time_step", "class_label"}
+    required_label_cols = {"vehicle_id", "class_label"}
     missing = required_label_cols - set(labels_df.columns)
     if missing:
         raise ValueError(
             f"Missing columns in labels file {config.labels_path}: {missing}"
         )
 
-    # Load operational readouts once and sort
     op_df = pd.read_csv(config.operational_path)
+    if "reference_time_step" not in labels_df.columns:
+        op_ref = op_df.groupby("vehicle_id")["time_step"].max()
+        labels_df = labels_df.merge(
+            op_ref.rename("reference_time_step"),
+            on="vehicle_id",
+            how="left",
+        )
+        if labels_df["reference_time_step"].isna().any():
+            raise ValueError(
+                "Could not infer reference_time_step for some vehicles; ensure operational data overlaps with labels."
+            )
+
+    if config.include_classes is not None:
+        labels_df = labels_df[labels_df["class_label"].isin(config.include_classes)]
+        if labels_df.empty:
+            raise ValueError(
+                f"No labels remain after filtering to {config.include_classes} in {config.labels_path}"
+            )
+
+    # Load operational readouts once and sort
     if "vehicle_id" not in op_df.columns or "time_step" not in op_df.columns:
         raise ValueError(
             f"Operational file {config.operational_path} must contain "
@@ -117,7 +140,20 @@ def build_sequences_for_training(
                 break
 
             ref_t = float(lab_row["reference_time_step"])
-            class_label = int(lab_row["class_label"])
+            original_label = int(lab_row["class_label"])
+
+            class_label = original_label
+            if config.label_mapping is not None:
+                if original_label not in config.label_mapping:
+                    continue
+                class_label = config.label_mapping[original_label]
+
+            if config.binary_target:
+                if config.binary_positive_classes is not None:
+                    is_positive = original_label in config.binary_positive_classes
+                else:
+                    is_positive = original_label != 0
+                class_label = 1 if is_positive else 0
 
             # Select all time_steps <= reference_time_step (past-only window)
             mask = times <= ref_t
@@ -203,6 +239,29 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional cap on number of windows per vehicle.",
     )
+    parser.add_argument(
+        "--include-classes",
+        type=str,
+        default=None,
+        help="Comma-separated class labels to include (e.g., 1,2,3,4).",
+    )
+    parser.add_argument(
+        "--binary-target",
+        action="store_true",
+        help="Convert labels to binary (non-zero vs zero by default).",
+    )
+    parser.add_argument(
+        "--binary-positive-classes",
+        type=str,
+        default=None,
+        help="Comma-separated classes considered positive when using --binary-target.",
+    )
+    parser.add_argument(
+        "--label-mapping",
+        type=str,
+        default=None,
+        help="Optional OLD:NEW comma-separated mapping (e.g., 1:0,2:1,3:2,4:3).",
+    )
     return parser.parse_args()
 
 
@@ -214,13 +273,33 @@ def main() -> None:
     else:
         output_path = None
 
+    include_classes = (
+        [int(x) for x in args.include_classes.split(",")] if args.include_classes else None
+    )
+    binary_positive = (
+        [int(x) for x in args.binary_positive_classes.split(",")]
+        if args.binary_positive_classes
+        else None
+    )
+    label_mapping = (
+        {
+            int(pair.split(":")[0]): int(pair.split(":")[1])
+            for pair in args.label_mapping.split(",")
+        }
+        if args.label_mapping
+        else None
+    )
+
     config = SequenceWindowConfig(
         operational_path=Path(args.operational),
         labels_path=Path(args.labels),
         output_path=output_path,
         window_size=args.window_size,
-        pad_value=0.0,
         max_windows_per_vehicle=args.max_windows_per_vehicle,
+        include_classes=include_classes,
+        binary_target=args.binary_target,
+        binary_positive_classes=binary_positive,
+        label_mapping=label_mapping,
     )
 
     sequences, labels, lengths, vids, refs = build_sequences_for_training(config)
@@ -238,4 +317,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

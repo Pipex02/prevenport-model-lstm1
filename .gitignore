@@ -29,6 +29,8 @@ logs/
 # ML experiment artifacts
 mlruns/
 wandb/
+artifacts/colab_runs/
+artifacts/evaluations/
 
 # Model artifacts and checkpoints
 models/
@@ -40,4 +42,7 @@ data/raw/
 data/interim/
 data/processed/
 data/external/
+
+# Ensure feature stats are tracked (critical for inference)
+!artifacts/feature_stats.json
 
